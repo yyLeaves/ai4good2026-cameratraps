@@ -37,7 +37,7 @@ from .data import image_dir_for, load_fold, load_task, make_loaders
 from .models import build_model
 from .train_utils import (JSONL, PRED_DIR, RESULTS, config_key, find_result, fmt_secs,
                           group_name, load_config, per_camera_scores, progress, run_key,
-                          set_seed, tee_console, wandb_run)
+                          run_name, set_seed, tee_console, wandb_run)
 
 # Mixed precision in bfloat16, which has the same exponent range as float32. That is what
 # lets the loop call `loss.backward()` directly: float16 gradients underflow to zero and
@@ -175,6 +175,14 @@ def run_fold(cfg: dict) -> dict:
     # Restore the best-validation checkpoint before the held-out evaluation. 
     if best_state is not None:
         model.load_state_dict(best_state)
+    # Keep those weights on disk when `ckpt_dir` is set; named by `run_name`, like the log.
+    if cfg.get("ckpt_dir"):
+        ckpt_path = Path(cfg["ckpt_dir"]) / f"{run_name(cfg)}.pt"
+        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"model": model.state_dict(), "run_key": run_key(cfg),
+                    "config": {k: v for k, v in cfg.items() if not k.startswith("_")},
+                    "val_macro_f1_present": best["macro_f1_present"]}, ckpt_path)
+        print(f"checkpoint: {ckpt_path}", flush=True)
     test = evaluate(model, loaders["test"], device, task.n_classes, amp,
                     desc="test" if verbose else None)
 
@@ -270,6 +278,9 @@ def main() -> None:
     ap.add_argument("--out", help="also write the full result of the last run here")
     ap.add_argument("--log-dir", dest="log_dir",
                     help="where the per-run console log goes; \"\" turns it off")
+    ap.add_argument("--ckpt-dir", dest="ckpt_dir",
+                    help="save the best-validation weights here as <run_name>.pt; "
+                         "unset saves nothing")
     ap.add_argument("--wandb", action="store_true", default=None,
                     help="log to Weights & Biases; seeds of one config share a group")
     a = ap.parse_args()
@@ -277,7 +288,7 @@ def main() -> None:
     cfg = load_config(a.config, {"split": a.split, "seed": a.seed, "epochs": a.epochs,
                                  "model": a.model, "size": a.size,
                                  "pretrained": a.pretrained, "wandb": a.wandb,
-                                 "log_dir": a.log_dir})
+                                 "log_dir": a.log_dir, "ckpt_dir": a.ckpt_dir})
     seed_list = [int(s) for s in a.seeds.split(",")] if a.seeds else [cfg["seed"]]
 
     skip = {"test_per_class_f1", "test_support", "history", "test_per_camera"}

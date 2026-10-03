@@ -88,7 +88,7 @@ def per_camera_scores(pred: np.ndarray, true: np.ndarray,
 # Everything that changes what a run computes. Anything not in here is either recorded
 # output, a property of the machine, or logging -- never of the experiment.
 IGNORED_IN_KEY = {"device", "num_workers", "verbose", "amp", "out", "image_dir",
-                  "wandb", "wandb_project", "log_dir"}
+                  "wandb", "wandb_project", "log_dir", "ckpt_dir"}
 
 
 def _fingerprint(d: dict, ignore: set[str]) -> str:
