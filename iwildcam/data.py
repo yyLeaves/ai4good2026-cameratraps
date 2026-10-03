@@ -270,11 +270,38 @@ def load_taxonomy(path: Path | None = None) -> pd.DataFrame:
         path: taxonomy file to read. Defaults to the shipped `data/taxonomy.csv`.
 
     Returns:
-        DataFrame indexed by species name, with `genus`, `family`, `order`, `class` and
-        the English `common_name`.
+        DataFrame indexed by species name, with `kingdom` ... `genus`, the binomial
+        `species` and the English `common_name`.
     """
     df = pd.read_csv(path or (DATA / "taxonomy.csv"))
-    return df.set_index("query")[["genus", "family", "order", "class", "common_name"]]
+    return df.set_index("query")[["kingdom", "phylum", "class", "order", "family", "genus",
+                                  "species", "common_name"]]
+
+
+def class_texts(classes, text_type: str = "common") -> list[str]:
+    """One text per class, for a zero-shot head.
+
+    Args:
+        classes: species names, e.g. `task.classes`.
+        text_type: `"common"`, the English common name (what CLIP is prompted with), or
+            `"taxon_common"`, BioCLIP's best format: "Animalia Chordata Mammalia ...
+            Aepyceros melampus with common name impala", down to the label's rank
+            (`taxon_common_name` in bioclip-2 src/imageomics/naming_eval.py).
+
+    Returns:
+        The texts, in the order of `classes`.
+    """
+    tax = load_taxonomy().loc[list(classes)]
+    if text_type == "common":
+        return list(tax["common_name"])
+    texts = []
+    for _, r in tax.iterrows():
+        ranks = [r[c].capitalize() for c in ("kingdom", "phylum", "class", "order", "family",
+                                             "genus") if isinstance(r[c], str)]
+        if isinstance(r["species"], str):
+            ranks.append(r["species"].split()[-1].lower())
+        texts.append(" ".join(ranks) + " with common name " + r["common_name"])
+    return texts
 
 
 def official_test_cameras(path: Path | None = None) -> list[int]:

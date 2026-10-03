@@ -113,28 +113,26 @@ CLIP_TEMPLATES = ("a photo of {}.", "{} in the wild.")
 
 
 @torch.no_grad()
-def clip_zeroshot_weights(backbone: str, classnames: list[str]) -> torch.Tensor:
-    """Zero-shot head weights for a CLIP backbone, as WiSE-FT and FLYP initialise it.
+def zeroshot_weights(clip, tokenizer, classnames: list[str], templates) -> torch.Tensor:
+    """Zero-shot head weights for a CLIP-style model, as WiSE-FT, FLYP and BioCLIP build them.
 
-    Each class is the normalised mean of its normalised prompt embeddings, scaled by
-    CLIP's learned logit scale (about 100), so `head(normalised image features)` starts
-    out as CLIP's zero-shot classifier.
+    Each class is the normalised mean of its normalised prompt embeddings, scaled by the
+    model's learned logit scale (about 100), so `head(normalised image features)` starts
+    out as its zero-shot classifier.
 
     Args:
-        backbone: a key of `CLIP_TEXT`.
-        classnames: one English name per class, in label order.
+        clip: an open_clip model (its text tower and `logit_scale` are used).
+        tokenizer: the matching open_clip tokenizer.
+        classnames: one text per class, in label order.
+        templates: prompt templates, format strings or callables.
 
     Returns:
         `(n_classes, embed_dim)` weight matrix.
     """
-    import open_clip
-    arch, tag = CLIP_TEXT[backbone]
-    clip = open_clip.create_model(arch, pretrained=tag).eval()
-    tokenizer = open_clip.get_tokenizer(arch)
     rows = []
     for name in classnames:
-        emb = F.normalize(clip.encode_text(tokenizer([t.format(name) for t in CLIP_TEMPLATES])),
-                          dim=-1)
+        prompts = [t(name) if callable(t) else t.format(name) for t in templates]
+        emb = F.normalize(clip.encode_text(tokenizer(prompts)), dim=-1)
         rows.append(F.normalize(emb.mean(0), dim=0))
     return clip.logit_scale.exp() * torch.stack(rows)
 
@@ -173,7 +171,11 @@ class TimmClassifier(nn.Module):
             net = timm.create_model(backbone, pretrained=pretrained, **timm_kwargs)
             self.d_feat = net.num_classes
             self.head = nn.Linear(self.d_feat, n_classes)
-            self.head.weight.data.copy_(clip_zeroshot_weights(backbone, classnames))
+            import open_clip
+            arch, tag = CLIP_TEXT[backbone]
+            clip = open_clip.create_model(arch, pretrained=tag).eval()
+            self.head.weight.data.copy_(zeroshot_weights(clip, open_clip.get_tokenizer(arch),
+                                                         classnames, CLIP_TEMPLATES))
             self.head.bias.data.zero_()
         else:
             net = timm.create_model(backbone, pretrained=pretrained, num_classes=n_classes,
@@ -199,19 +201,66 @@ class TimmClassifier(nn.Module):
         return self.logits(self.features(x))
 
 
+# Backbones with weights on open_clip only: name in configs -> open_clip model id.
+OPEN_CLIP = {"bioclip": "hf-hub:imageomics/bioclip", "bioclip-2": "hf-hub:imageomics/bioclip-2"}
+
+
+class OpenClipClassifier(TimmClassifier):
+    """The image tower of an open_clip model (BioCLIP) with its zero-shot head.
+
+    Built as BioCLIP's own zero-shot classifier (bioclip-2 src/evaluation/zero_shot_iid.py):
+    the 80 OpenAI ImageNet templates over the class texts, on L2-normalised projected
+    image features. Shares `features`, `logits` and `forward` with `TimmClassifier`.
+    """
+
+    def __init__(self, n_classes: int, backbone: str, pretrained: bool = True,
+                 dropout: float = 0.0, zeroshot_head: bool = True,
+                 classnames: list[str] | None = None, quick_gelu: bool = False):
+        """Load the model and build the head.
+
+        Args:
+            n_classes: number of species, the output dimension.
+            backbone: a key of `OPEN_CLIP`.
+            pretrained: must be true; the hub models always load their weights.
+            dropout: dropout probability before the head. 0 disables it.
+            zeroshot_head: must be true; this class only has the zero-shot head.
+            classnames: one text per class, e.g. `class_texts(..., "taxon_common")`.
+            quick_gelu: build with QuickGELU. BioCLIP was trained from OpenAI CLIP with
+                QuickGELU, but its hub config does not say so.
+        """
+        nn.Module.__init__(self)
+        if not (pretrained and zeroshot_head):
+            raise ValueError("OpenClipClassifier needs pretrained=True and zeroshot_head=True")
+        import open_clip
+        from open_clip.zero_shot_metadata import OPENAI_IMAGENET_TEMPLATES
+        clip = open_clip.create_model(OPEN_CLIP[backbone], force_quick_gelu=quick_gelu).eval()
+        self.normalize = True
+        self.d_feat = clip.visual.output_dim
+        self.head = nn.Linear(self.d_feat, n_classes)
+        self.head.weight.data.copy_(zeroshot_weights(
+            clip, open_clip.get_tokenizer(OPEN_CLIP[backbone]), classnames,
+            OPENAI_IMAGENET_TEMPLATES))
+        self.head.bias.data.zero_()
+        self.backbone = clip.visual                     # the text tower is dropped
+        self.dropout = nn.Dropout(dropout) if dropout else nn.Identity()
+        self.mean, self.std = clip.visual.preprocess_cfg["mean"], clip.visual.preprocess_cfg["std"]
+
+
 def build_model(name: str, n_classes: int, **kw) -> nn.Module:
     """Build the model named in a config.
 
     Args:
-        name: one of `BACKBONES` (a torchvision ResNet), or any timm model name with its
-            pretrained tag, e.g. `"convnext_base.fb_in22k"`.
+        name: one of `BACKBONES` (a torchvision ResNet), of `OPEN_CLIP` (BioCLIP), or any
+            timm model name with its pretrained tag, e.g. `"convnext_base.fb_in22k"`.
         n_classes: number of species.
         **kw: passed to `ResNetClassifier` -- `pretrained`, `dropout`, `freeze_bn` -- or
-            to `TimmClassifier`.
+            to `TimmClassifier` / `OpenClipClassifier`.
 
     Returns:
-        A `ResNetClassifier` or a `TimmClassifier`.
+        A `ResNetClassifier`, `OpenClipClassifier` or `TimmClassifier`.
     """
     if name in BACKBONES:
         return ResNetClassifier(n_classes, backbone=name, **kw)
+    if name in OPEN_CLIP:
+        return OpenClipClassifier(n_classes, backbone=name, **kw)
     return TimmClassifier(n_classes, backbone=name, **kw)

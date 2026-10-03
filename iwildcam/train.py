@@ -34,7 +34,7 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import accuracy_score, f1_score
 
-from .data import (build_transform, image_dir_for, load_fold, load_task, load_taxonomy,
+from .data import (build_transform, class_texts, image_dir_for, load_fold, load_task,
                    make_loaders)
 from .models import build_model
 from .train_utils import (JSONL, PRED_DIR, RESULTS, config_key, find_result, fmt_secs,
@@ -167,7 +167,8 @@ def run_fold(cfg: dict) -> dict:
 
     model_kwargs = dict(cfg.get("model_kwargs", {}))
     if model_kwargs.get("zeroshot_head"):
-        model_kwargs["classnames"] = list(load_taxonomy()["common_name"][task.classes])
+        model_kwargs["classnames"] = class_texts(task.classes,
+                                                 model_kwargs.pop("text_type", "common"))
     model = build_model(cfg["model"], task.n_classes,
                         pretrained=cfg.get("pretrained", True), **model_kwargs).to(device)
     n_params = sum(p.numel() for p in model.parameters())
