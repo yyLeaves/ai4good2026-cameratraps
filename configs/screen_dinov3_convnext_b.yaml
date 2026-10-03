@@ -1,0 +1,39 @@
+# Backbone screening at 224: ConvNeXt-B distilled from DINOv3 7B (arXiv 2508.10104), with the
+# ConvNeXt recipe. The official 22k fine-tuning recipe's
+# small head init and drop path; warmup + cosine and grad clip as for the ViTs.
+# github.com/facebookresearch/ConvNeXt (TRAINING.md)
+
+split: official_ood
+seed: 0
+
+model: convnext_base.dinov3_lvd1689m
+pretrained: true
+model_kwargs:
+  drop_path_rate: 0.2
+  head_init_scale: 0.001
+
+lr: 0.00005                  # 5e-5
+weight_decay: 0.05
+wd_skip_1d: true
+lr_schedule: cosine
+warmup_steps: 500
+grad_clip: 1.0
+
+min_per_camera: 10
+min_cameras: 5
+
+size: 224
+height: 224
+image_dir: null
+epochs: 10                    # as fast.yaml, so the ResNet rows compare directly
+batch_size: 128
+
+amp: true
+num_workers: 8
+device: null
+verbose: true
+pred_dir: results/preds
+log_dir: logs
+
+wandb: false
+wandb_project: ai4good-iwildcam
