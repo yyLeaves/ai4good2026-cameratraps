@@ -270,10 +270,11 @@ def load_taxonomy(path: Path | None = None) -> pd.DataFrame:
         path: taxonomy file to read. Defaults to the shipped `data/taxonomy.csv`.
 
     Returns:
-        DataFrame indexed by species name, with `genus`, `family`, `order`, `class`.
+        DataFrame indexed by species name, with `genus`, `family`, `order`, `class` and
+        the English `common_name`.
     """
     df = pd.read_csv(path or (DATA / "taxonomy.csv"))
-    return df.set_index("query")[["genus", "family", "order", "class"]]
+    return df.set_index("query")[["genus", "family", "order", "class", "common_name"]]
 
 
 def official_test_cameras(path: Path | None = None) -> list[int]:
@@ -391,7 +392,8 @@ def unlabelled_frames(task: Task, cameras=None, size: int = 448,
     return UnlabelledDataset(task.image_dir, list(e["file_name"]), transform, size)
 
 
-def build_transform(size: int, train: bool = False) -> v2.Compose:
+def build_transform(size: int, train: bool = False, mean=IMAGENET_MEAN,
+                    std=IMAGENET_STD) -> v2.Compose:
     """The image pipeline: a PIL image in, a normalised `(3, size, size)` tensor out.
 
     Augmentation goes here. Only a random horizontal flip is applied, and only when
@@ -402,6 +404,8 @@ def build_transform(size: int, train: bool = False) -> v2.Compose:
     Args:
         size: side length in pixels of the square output.
         train: include the training augmentation. Leave false for val and test.
+        mean, std: normalisation constants. Use the backbone's own (`model.mean`,
+            `model.std`); CLIP, for one, was not trained with ImageNet's.
 
     Returns:
         A `v2.Compose` transform.
@@ -412,7 +416,7 @@ def build_transform(size: int, train: bool = False) -> v2.Compose:
         *aug,
         v2.ToImage(),                              # PIL -> uint8 tensor, (3, H, W)
         v2.ToDtype(torch.float32, scale=True),     # uint8 0..255 -> float 0..1
-        v2.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        v2.Normalize(mean=mean, std=std),
     ])
 
 

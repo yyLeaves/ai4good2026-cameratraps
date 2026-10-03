@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from pathlib import Path
 
@@ -33,7 +34,8 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import accuracy_score, f1_score
 
-from .data import image_dir_for, load_fold, load_task, make_loaders
+from .data import (build_transform, image_dir_for, load_fold, load_task, load_taxonomy,
+                   make_loaders)
 from .models import build_model
 from .train_utils import (JSONL, PRED_DIR, RESULTS, config_key, find_result, fmt_secs,
                           group_name, load_config, per_camera_scores, progress, run_key,
@@ -94,6 +96,48 @@ def evaluate(model: nn.Module, loader, device: str, n_classes: int,
     }
 
 
+# --- optimiser set-up for fine-tuning large pretrained backbones -----------------------
+
+def param_groups(model: nn.Module, cfg: dict):
+    """AdamW parameter groups. With neither key set, all parameters in one group, as before.
+
+    `head_lr_mult` gives the head `lr * head_lr_mult` (a fresh head next to a backbone
+    tuned at a small lr). `wd_skip_1d` exempts biases, norms, layer scales and the
+    position / class / register tokens from weight decay, the usual ViT fine-tuning set-up.
+    """
+    mult, skip = cfg.get("head_lr_mult", 1.0), cfg.get("wd_skip_1d", False)
+    if mult == 1.0 and not skip:
+        return model.parameters()
+    wd = cfg.get("weight_decay", 1e-4)
+    head = {id(p) for p in model.head.parameters()}
+    groups = {}
+    for name, p in model.named_parameters():
+        is_head = id(p) in head
+        no_wd = skip and (p.ndim <= 1 or name.endswith(("pos_embed", "cls_token", "reg_token")))
+        groups.setdefault((is_head, no_wd), {
+            "params": [], "lr": cfg["lr"] * (mult if is_head else 1.0),
+            "weight_decay": 0.0 if no_wd else wd})["params"].append(p)
+    return list(groups.values())
+
+
+def lr_schedule(opt, cfg: dict, total_steps: int):
+    """Per-step LR schedule: `warmup_steps` of linear warmup, then constant or, with
+    `lr_schedule: cosine`, cosine decay to zero. None (constant LR, as before) if neither
+    is set."""
+    warmup, cosine = cfg.get("warmup_steps", 0), cfg.get("lr_schedule") == "cosine"
+    if not warmup and not cosine:
+        return None
+
+    def factor(step: int) -> float:
+        if step < warmup:
+            return (step + 1) / warmup
+        if not cosine:
+            return 1.0
+        return 0.5 * (1 + math.cos(math.pi * (step - warmup) / max(1, total_steps - warmup)))
+
+    return torch.optim.lr_scheduler.LambdaLR(opt, factor)
+
+
 # --- the training loop -----------------------------------------------------------------
 
 def run_fold(cfg: dict) -> dict:
@@ -120,19 +164,26 @@ def run_fold(cfg: dict) -> dict:
                      image_dir=cfg.get("image_dir") or image_dir_for(cfg["height"]),
                      require_files=True)
     fold = load_fold(task, cfg["split"])
-    loaders = make_loaders(task, fold, cfg["batch_size"], cfg.get("size", 448),
-                           cfg.get("num_workers", 8))
+
+    model_kwargs = dict(cfg.get("model_kwargs", {}))
+    if model_kwargs.get("zeroshot_head"):
+        model_kwargs["classnames"] = list(load_taxonomy()["common_name"][task.classes])
+    model = build_model(cfg["model"], task.n_classes,
+                        pretrained=cfg.get("pretrained", True), **model_kwargs).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+
+    # Normalise with the backbone's own constants (ImageNet's for ResNets, as before).
+    size = cfg.get("size", 448)
+    loaders = make_loaders(task, fold, cfg["batch_size"], size, cfg.get("num_workers", 8),
+                           build_transform(size, True, model.mean, model.std),
+                           build_transform(size, False, model.mean, model.std))
     print(f"{task.summary()}\nfold {cfg['split']}: "
           + "  ".join(f"{k}={len(v):,}" for k, v in fold.items()), flush=True)
     log = wandb_run(cfg)
 
-    model = build_model(cfg["model"], task.n_classes,
-                        pretrained=cfg.get("pretrained", True),
-                        **cfg.get("model_kwargs", {})).to(device)
-    n_params = sum(p.numel() for p in model.parameters())
-
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"],
+    opt = torch.optim.AdamW(param_groups(model, cfg), lr=cfg["lr"],
                             weight_decay=cfg.get("weight_decay", 1e-4))
+    sched = lr_schedule(opt, cfg, cfg["epochs"] * len(loaders["train"]))
     crit = nn.CrossEntropyLoss()
 
     best, best_state = {"macro_f1_present": -1.0}, None
@@ -151,7 +202,11 @@ def run_fold(cfg: dict) -> dict:
                 loss = crit(model(xb), yb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
+            if cfg.get("grad_clip"):
+                nn.utils.clip_grad_norm_(model.parameters(), cfg["grad_clip"])
             opt.step()
+            if sched is not None:
+                sched.step()
             total += loss.item() * len(yb)
             seen += len(yb)
             # refresh=False: the bar redraws on its own schedule, not once per batch.
