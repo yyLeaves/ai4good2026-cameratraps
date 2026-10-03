@@ -1,0 +1,36 @@
+# Backbone screening at 224: CLIP ViT-B/16 (OpenAI weights), fine-tuned the WiSE-FT / FLYP
+# way: zero-shot text head on L2-normalised features, small lr, warmup + cosine, grad clip.
+# github.com/mlfoundations/wise-ft (src/models/finetune.py, zeroshot.py), github.com/locuslab/FLYP
+
+split: official_ood
+seed: 0
+
+model: vit_base_patch16_clip_quickgelu_224.openai   # QuickGELU, as OpenAI CLIP was trained
+pretrained: true
+model_kwargs:
+  zeroshot_head: true        # head = CLIP zero-shot classifier over the species' common names
+
+lr: 0.00001                  # 1e-5; 1e-4 on a CLIP backbone costs OOD accuracy (WiSE-FT sec. 4)
+weight_decay: 0.1
+lr_schedule: cosine
+warmup_steps: 500
+grad_clip: 1.0
+
+min_per_camera: 10
+min_cameras: 5
+
+size: 224
+height: 224
+image_dir: null
+epochs: 10                    # as fast.yaml, so the ResNet rows compare directly
+batch_size: 128
+
+amp: true
+num_workers: 8
+device: null
+verbose: true
+pred_dir: results/preds
+log_dir: logs
+
+wandb: false
+wandb_project: ai4good-iwildcam
