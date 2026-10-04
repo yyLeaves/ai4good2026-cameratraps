@@ -219,6 +219,8 @@ def run_fold(cfg: dict) -> dict:
     model = build_model(cfg["model"], task.n_classes,
                         pretrained=cfg.get("pretrained", True), **model_kwargs).to(device)
     n_params = sum(p.numel() for p in model.parameters())
+    if cfg.get("grad_checkpointing"):     # recompute activations: ViT-g / ViT-H fit in memory
+        model.backbone.set_grad_checkpointing(True)
 
     # Normalise with the backbone's own constants (ImageNet's for ResNets, as before).
     size = cfg.get("size", 448)

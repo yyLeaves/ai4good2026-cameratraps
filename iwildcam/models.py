@@ -107,7 +107,8 @@ class ResNetClassifier(nn.Module):
 
 # CLIP image towers in timm, and the open_clip model holding the matching text tower.
 CLIP_TEXT = {"vit_base_patch16_clip_quickgelu_224.openai": ("ViT-B-16-quickgelu", "openai"),
-             "vit_large_patch14_clip_quickgelu_224.openai": ("ViT-L-14-quickgelu", "openai")}
+             "vit_large_patch14_clip_quickgelu_224.openai": ("ViT-L-14-quickgelu", "openai"),
+             "vit_pe_core_large_patch14_336.fb": ("PE-Core-L-14-336", "meta")}
 # The iWildCam prompts of WiSE-FT and FLYP (src/templates/iwildcam_template.py).
 CLIP_TEMPLATES = ("a photo of {}.", "{} in the wild.")
 
@@ -202,7 +203,8 @@ class TimmClassifier(nn.Module):
 
 
 # Backbones with weights on open_clip only: name in configs -> open_clip model id.
-OPEN_CLIP = {"bioclip": "hf-hub:imageomics/bioclip", "bioclip-2": "hf-hub:imageomics/bioclip-2"}
+OPEN_CLIP = {"bioclip": "hf-hub:imageomics/bioclip", "bioclip-2": "hf-hub:imageomics/bioclip-2",
+             "bioclip-2.5": "hf-hub:imageomics/bioclip-2.5-vith14"}
 
 
 class OpenClipClassifier(TimmClassifier):
