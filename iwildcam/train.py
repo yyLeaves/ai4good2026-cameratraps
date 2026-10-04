@@ -34,8 +34,10 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import accuracy_score, f1_score
 
-from .data import (build_transform, class_texts, image_dir_for, load_fold, load_task,
-                   make_loaders)
+from torch.utils.data import DataLoader
+
+from .data import (ImageDataset, build_transform, class_texts, image_dir_for, load_fold,
+                   load_task, make_loaders)
 from .models import build_model
 from .train_utils import (JSONL, PRED_DIR, RESULTS, config_key, find_result, fmt_secs,
                           group_name, load_config, per_camera_scores, progress, run_key,
@@ -138,6 +140,51 @@ def lr_schedule(opt, cfg: dict, total_steps: int):
     return torch.optim.lr_scheduler.LambdaLR(opt, factor)
 
 
+def linear_probe_head(model: nn.Module, task, fold, transform, cfg: dict, device: str,
+                      amp: bool) -> dict:
+    """The LP stage of LP-FT (Kumar et al., ICLR 2022): fit the head on frozen features.
+
+    Fine-tuning from a random head distorts the pretrained features, which costs OOD
+    accuracy; starting from a fitted head avoids most of it. Done as the reference code
+    (github.com/AnanyaKumar/transfer_learning, unlabeled_extrapolation/log_reg_sk.py):
+    features from the model in eval mode without augmentation, standardised by one scalar
+    mean and std, sklearn LogisticRegression warm-started along a sweep of C, the best C on
+    val (here by macro-F1, our metric), weights mapped back to the raw features.
+
+    Returns:
+        The chosen C and the probe's val macro-F1(present).
+    """
+    from sklearn.linear_model import LogisticRegression
+    model.eval()
+    feats = {}
+    for split in ("train", "val"):
+        out = []
+        with torch.no_grad(), torch.autocast("cuda", dtype=AMP_DTYPE, enabled=amp):
+            for xb, _, _ in DataLoader(ImageDataset(task, fold[split], transform), batch_size=256,
+                                       num_workers=cfg.get("num_workers", 8)):
+                out.append(model.features(xb.to(device)).float().cpu())
+        feats[split] = torch.cat(out).numpy()
+    mu, sd = feats["train"].mean(), feats["train"].std()
+    y = {s: task.y[fold[s]] for s in feats}
+    clf = LogisticRegression(random_state=cfg["seed"], warm_start=True, max_iter=200)
+    best = None
+    # The reference sweeps C over 1e-7..1e2; on our features the optimum sits near 1e-2.
+    for c in np.logspace(-4, 1, 6):
+        clf.C = c
+        clf.fit((feats["train"] - mu) / sd, y["train"])
+        pred = clf.predict((feats["val"] - mu) / sd)
+        f1 = f1_score(y["val"], pred, average="macro", labels=np.unique(y["val"]))
+        if best is None or f1 > best[0]:
+            best = (f1, c, clf.coef_.copy(), clf.intercept_.copy())
+    f1, c, w, b = best
+    assert len(clf.classes_) == task.n_classes, "every class must be in the train split"
+    with torch.no_grad():
+        model.head.weight.copy_(torch.as_tensor(w / sd))
+        model.head.bias.copy_(torch.as_tensor(b - w.sum(1) * mu / sd))
+    print(f"linear probe: C={c:.0e}  val macroF1(present) {f1:.3f}", flush=True)
+    return {"lp_C": float(c), "lp_val_macro_f1_present": float(f1)}
+
+
 # --- the training loop -----------------------------------------------------------------
 
 def run_fold(cfg: dict) -> dict:
@@ -181,6 +228,12 @@ def run_fold(cfg: dict) -> dict:
     print(f"{task.summary()}\nfold {cfg['split']}: "
           + "  ".join(f"{k}={len(v):,}" for k, v in fold.items()), flush=True)
     log = wandb_run(cfg)
+
+    lp, init_head = {}, None
+    if cfg.get("lp_init"):
+        lp = linear_probe_head(model, task, fold, build_transform(size, False, model.mean,
+                                                                  model.std), cfg, device, amp)
+        init_head = {k: v.detach().cpu().clone() for k, v in model.head.state_dict().items()}
 
     opt = torch.optim.AdamW(param_groups(model, cfg), lr=cfg["lr"],
                             weight_decay=cfg.get("weight_decay", 1e-4))
@@ -237,7 +290,9 @@ def run_fold(cfg: dict) -> dict:
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({"model": model.state_dict(), "run_key": run_key(cfg),
                     "config": {k: v for k, v in cfg.items() if not k.startswith("_")},
-                    "val_macro_f1_present": best["macro_f1_present"]}, ckpt_path)
+                    "val_macro_f1_present": best["macro_f1_present"],
+                    # the LP head, so WiSE-FT can interpolate back to pretrained + probe
+                    **({"init_head": init_head} if init_head is not None else {})}, ckpt_path)
         print(f"checkpoint: {ckpt_path}", flush=True)
     test = evaluate(model, loaders["test"], device, task.n_classes, amp,
                     desc="test" if verbose else None)
@@ -282,6 +337,7 @@ def run_fold(cfg: dict) -> dict:
         "test_per_camera": per_cam,
         "pred_file": str(pred_dir / f"{tag}.npz"),
         "history": hist,
+        **lp,
         "config": {k: v for k, v in cfg.items() if not k.startswith("_")},
     }
 
