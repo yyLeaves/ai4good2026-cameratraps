@@ -1,0 +1,37 @@
+# Backbone screening at 224: Meta Perception Encoder PE-Core-L/14 (arXiv 2504.13181,
+# github.com/facebookresearch/perception_models), CLIP recipe with its zero-shot text head.
+# Native 336px; at 224 timm resamples the position embedding and rebuilds the RoPE grid.
+
+split: official_ood
+seed: 0
+
+model: vit_pe_core_large_patch14_336.fb   # normalises with mean/std 0.5
+pretrained: true
+model_kwargs:
+  zeroshot_head: true        # head = zero-shot classifier over the species' common names
+  img_size: 224
+
+lr: 0.00001                  # 1e-5; 1e-4 on a CLIP backbone costs OOD accuracy (WiSE-FT sec. 4)
+weight_decay: 0.1
+lr_schedule: cosine
+warmup_steps: 500
+grad_clip: 1.0
+
+min_per_camera: 10
+min_cameras: 5
+
+size: 224
+height: 224
+image_dir: null
+epochs: 10                    # as fast.yaml, so the ResNet rows compare directly
+batch_size: 128
+
+amp: true
+num_workers: 8
+device: null
+verbose: true
+pred_dir: results/preds
+log_dir: logs
+
+wandb: false
+wandb_project: ai4good-iwildcam
