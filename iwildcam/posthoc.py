@@ -27,7 +27,8 @@ import torch
 from sklearn.metrics import f1_score
 from torch.utils.data import DataLoader
 
-from .data import ImageDataset, build_transform, class_texts, image_dir_for, load_fold, load_task
+from .data import (ImageDataset, build_transform, class_texts, crop_task, image_dir_for,
+                   load_fold, load_task)
 from .models import build_model
 from .train import AMP_DTYPE
 from .train_utils import RESULTS, load_config, run_name
@@ -104,6 +105,8 @@ def main() -> None:
     task = load_task(cfg.get("min_per_camera", 10), cfg.get("min_cameras", 5),
                      image_dir=cfg.get("image_dir") or image_dir_for(cfg["height"]),
                      require_files=True)
+    if cfg.get("crops"):
+        task = crop_task(task, cfg["split"], cfg["crops"])
     fold = load_fold(task, cfg["split"])
     OUT.mkdir(parents=True, exist_ok=True)
     cache = OUT / f"{run_name(cfg)}-a{a.alpha}.npz"

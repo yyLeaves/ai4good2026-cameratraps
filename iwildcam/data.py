@@ -225,6 +225,42 @@ def load_task(min_per_camera: int = 10, min_cameras: int = 5,
                 classes=classes, image_dir=img_dir)
 
 
+def crop_task(task: Task, split: str, crop_dir: str | Path) -> Task:
+    """The task on MegaDetector box crops (`prepare_crops.py`), as the iWildCam 2021 winners
+    train and apply their box model (github.com/alcunha/iwildcam2021ufam).
+
+    In the train part of `split` every crop of an image becomes a row with its image's label,
+    camera and sequence, and an image without a box keeps its full frame (`_explode_bboxes`).
+    In val and test each image keeps exactly one row -- its most confident box, else the full
+    frame (`_prepare_bboxes`) -- so scores stay per image, comparable with full-image runs and
+    fusable with them row by row (val and test rows keep the order of `task.df`).
+
+    Args:
+        task: the full-image task; its `image_dir` supplies the full-frame fallbacks.
+        split: the fold whose train part is exploded, e.g. `"official_ood"`.
+        crop_dir: folder written by `prepare_crops.py`, absolute or relative to `data/`.
+
+    Returns:
+        A `Task` reading from `data/`, `file_name` relative to it.
+    """
+    crop_dir = DATA / crop_dir
+    index = pd.read_csv(crop_dir / "index.csv")
+    index["file"] = crop_dir.name + "/" + index["file"]
+    df = task.df.copy()
+    df["file_name"] = task.image_dir.name + "/" + df["file_name"]       # full-frame fallback
+    train = df[df[split] == "train"]
+    exploded = train.drop(columns="file_name").merge(
+        index[["image_id", "rank", "file"]], on="image_id", how="left")
+    exploded["file_name"] = exploded["file"].fillna(
+        exploded["image_id"].map(train.set_index("image_id")["file_name"]))
+    held = df[df[split] != "train"].copy()
+    top = index[index["rank"] == 0].set_index("image_id")["file"]
+    held["file_name"] = held["image_id"].map(top).fillna(held["file_name"])
+    out = pd.concat([exploded.drop(columns=["rank", "file"])[df.columns], held],
+                    ignore_index=True)
+    return Task(df=out, empty=task.empty, classes=task.classes, image_dir=DATA)
+
+
 FOLDS = ("official_ood", "random_burst")
 
 

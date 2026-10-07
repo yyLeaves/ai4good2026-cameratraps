@@ -36,8 +36,8 @@ from sklearn.metrics import accuracy_score, f1_score
 
 from torch.utils.data import DataLoader
 
-from .data import (ImageDataset, build_transform, class_texts, image_dir_for, load_fold,
-                   load_task, make_loaders)
+from .data import (ImageDataset, build_transform, class_texts, crop_task, image_dir_for,
+                   load_fold, load_task, make_loaders)
 from .models import build_model
 from .train_utils import (JSONL, PRED_DIR, RESULTS, config_key, find_result, fmt_secs,
                           group_name, load_config, per_camera_scores, progress, run_key,
@@ -210,6 +210,8 @@ def run_fold(cfg: dict) -> dict:
     task = load_task(cfg.get("min_per_camera", 10), cfg.get("min_cameras", 5),
                      image_dir=cfg.get("image_dir") or image_dir_for(cfg["height"]),
                      require_files=True)
+    if cfg.get("crops"):          # MegaDetector box crops instead of full frames
+        task = crop_task(task, cfg["split"], cfg["crops"])
     fold = load_fold(task, cfg["split"])
 
     model_kwargs = dict(cfg.get("model_kwargs", {}))
