@@ -456,7 +456,7 @@ def unlabelled_frames(task: Task, cameras=None, size: int = 448,
 
 
 def build_transform(size: int, train: bool = False, mean=IMAGENET_MEAN,
-                    std=IMAGENET_STD) -> v2.Compose:
+                    std=IMAGENET_STD, randaugment=None) -> v2.Compose:
     """The image pipeline: a PIL image in, a normalised `(3, size, size)` tensor out.
 
     Augmentation goes here. Only a random horizontal flip is applied, and only when
@@ -469,11 +469,16 @@ def build_transform(size: int, train: bool = False, mean=IMAGENET_MEAN,
         train: include the training augmentation. Leave false for val and test.
         mean, std: normalisation constants. Use the backbone's own (`model.mean`,
             `model.std`); CLIP, for one, was not trained with ImageNet's.
+        randaugment: `(num_ops, magnitude)` with magnitude out of 10, as the TF RandAugment
+            the iWildCam 2021 winners use (6, 2); applied after the flip, train only.
 
     Returns:
         A `v2.Compose` transform.
     """
     aug = [v2.RandomHorizontalFlip(p=0.5)] if train else []
+    if train and randaugment:
+        num_ops, magnitude = randaugment
+        aug.append(v2.RandAugment(num_ops=num_ops, magnitude=magnitude, num_magnitude_bins=11))
     return v2.Compose([
         v2.Resize((size, size), interpolation=v2.InterpolationMode.BILINEAR),
         *aug,

@@ -227,7 +227,8 @@ def run_fold(cfg: dict) -> dict:
     # Normalise with the backbone's own constants (ImageNet's for ResNets, as before).
     size = cfg.get("size", 448)
     loaders = make_loaders(task, fold, cfg["batch_size"], size, cfg.get("num_workers", 8),
-                           build_transform(size, True, model.mean, model.std),
+                           build_transform(size, True, model.mean, model.std,
+                                           cfg.get("randaugment")),
                            build_transform(size, False, model.mean, model.std))
     print(f"{task.summary()}\nfold {cfg['split']}: "
           + "  ".join(f"{k}={len(v):,}" for k, v in fold.items()), flush=True)
@@ -242,7 +243,7 @@ def run_fold(cfg: dict) -> dict:
     opt = torch.optim.AdamW(param_groups(model, cfg), lr=cfg["lr"],
                             weight_decay=cfg.get("weight_decay", 1e-4))
     sched = lr_schedule(opt, cfg, cfg["epochs"] * len(loaders["train"]))
-    crit = nn.CrossEntropyLoss()
+    crit = nn.CrossEntropyLoss(label_smoothing=cfg.get("label_smoothing", 0.0))
 
     best, best_state = {"macro_f1_present": -1.0}, None
     hist = []
