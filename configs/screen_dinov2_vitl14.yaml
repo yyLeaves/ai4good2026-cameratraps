@@ -1,0 +1,38 @@
+# Backbone screening at 224: DINOv2 ViT-L/14, same recipe as ViT-B/14. Small backbone lr with a 10x head lr, warmup
+# + cosine, grad clip, no weight decay on norms / layer scales / tokens.
+# github.com/facebookresearch/dinov2, arXiv 2606.20223 (DeepForestVisionV2, sec. 2.3)
+
+split: official_ood
+seed: 0
+
+model: vit_large_patch14_dinov2.lvd142m
+pretrained: true
+model_kwargs:
+  img_size: 224              # timm resamples the 518px position embedding once at load
+
+lr: 0.00001                  # backbone 1e-5
+head_lr_mult: 10             # fresh head at 1e-4
+weight_decay: 0.05
+wd_skip_1d: true
+lr_schedule: cosine
+warmup_steps: 500
+grad_clip: 1.0
+
+min_per_camera: 10
+min_cameras: 5
+
+size: 224
+height: 224
+image_dir: null
+epochs: 10                    # as fast.yaml, so the ResNet rows compare directly
+batch_size: 128
+
+amp: true
+num_workers: 8
+device: null
+verbose: true
+pred_dir: results/preds
+log_dir: logs
+
+wandb: false
+wandb_project: ai4good-iwildcam

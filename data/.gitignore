@@ -3,6 +3,8 @@ images_h*/
 images_unlabelled_h*/
 images_orig/
 images_*/
+# MegaDetector box crops written by prepare_crops.py
+crops_*/
 
 # Instructor-side leftovers from how this repo was built.
 cache/

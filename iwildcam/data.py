@@ -225,6 +225,42 @@ def load_task(min_per_camera: int = 10, min_cameras: int = 5,
                 classes=classes, image_dir=img_dir)
 
 
+def crop_task(task: Task, split: str, crop_dir: str | Path) -> Task:
+    """The task on MegaDetector box crops (`prepare_crops.py`), as the iWildCam 2021 winners
+    train and apply their box model (github.com/alcunha/iwildcam2021ufam).
+
+    In the train part of `split` every crop of an image becomes a row with its image's label,
+    camera and sequence, and an image without a box keeps its full frame (`_explode_bboxes`).
+    In val and test each image keeps exactly one row -- its most confident box, else the full
+    frame (`_prepare_bboxes`) -- so scores stay per image, comparable with full-image runs and
+    fusable with them row by row (val and test rows keep the order of `task.df`).
+
+    Args:
+        task: the full-image task; its `image_dir` supplies the full-frame fallbacks.
+        split: the fold whose train part is exploded, e.g. `"official_ood"`.
+        crop_dir: folder written by `prepare_crops.py`, absolute or relative to `data/`.
+
+    Returns:
+        A `Task` reading from `data/`, `file_name` relative to it.
+    """
+    crop_dir = DATA / crop_dir
+    index = pd.read_csv(crop_dir / "index.csv")
+    index["file"] = crop_dir.name + "/" + index["file"]
+    df = task.df.copy()
+    df["file_name"] = task.image_dir.name + "/" + df["file_name"]       # full-frame fallback
+    train = df[df[split] == "train"]
+    exploded = train.drop(columns="file_name").merge(
+        index[["image_id", "rank", "file"]], on="image_id", how="left")
+    exploded["file_name"] = exploded["file"].fillna(
+        exploded["image_id"].map(train.set_index("image_id")["file_name"]))
+    held = df[df[split] != "train"].copy()
+    top = index[index["rank"] == 0].set_index("image_id")["file"]
+    held["file_name"] = held["image_id"].map(top).fillna(held["file_name"])
+    out = pd.concat([exploded.drop(columns=["rank", "file"])[df.columns], held],
+                    ignore_index=True)
+    return Task(df=out, empty=task.empty, classes=task.classes, image_dir=DATA)
+
+
 FOLDS = ("official_ood", "random_burst")
 
 
@@ -270,10 +306,38 @@ def load_taxonomy(path: Path | None = None) -> pd.DataFrame:
         path: taxonomy file to read. Defaults to the shipped `data/taxonomy.csv`.
 
     Returns:
-        DataFrame indexed by species name, with `genus`, `family`, `order`, `class`.
+        DataFrame indexed by species name, with `kingdom` ... `genus`, the binomial
+        `species` and the English `common_name`.
     """
     df = pd.read_csv(path or (DATA / "taxonomy.csv"))
-    return df.set_index("query")[["genus", "family", "order", "class"]]
+    return df.set_index("query")[["kingdom", "phylum", "class", "order", "family", "genus",
+                                  "species", "common_name"]]
+
+
+def class_texts(classes, text_type: str = "common") -> list[str]:
+    """One text per class, for a zero-shot head.
+
+    Args:
+        classes: species names, e.g. `task.classes`.
+        text_type: `"common"`, the English common name (what CLIP is prompted with), or
+            `"taxon_common"`, BioCLIP's best format: "Animalia Chordata Mammalia ...
+            Aepyceros melampus with common name impala", down to the label's rank
+            (`taxon_common_name` in bioclip-2 src/imageomics/naming_eval.py).
+
+    Returns:
+        The texts, in the order of `classes`.
+    """
+    tax = load_taxonomy().loc[list(classes)]
+    if text_type == "common":
+        return list(tax["common_name"])
+    texts = []
+    for _, r in tax.iterrows():
+        ranks = [r[c].capitalize() for c in ("kingdom", "phylum", "class", "order", "family",
+                                             "genus") if isinstance(r[c], str)]
+        if isinstance(r["species"], str):
+            ranks.append(r["species"].split()[-1].lower())
+        texts.append(" ".join(ranks) + " with common name " + r["common_name"])
+    return texts
 
 
 def official_test_cameras(path: Path | None = None) -> list[int]:
@@ -391,7 +455,8 @@ def unlabelled_frames(task: Task, cameras=None, size: int = 448,
     return UnlabelledDataset(task.image_dir, list(e["file_name"]), transform, size)
 
 
-def build_transform(size: int, train: bool = False) -> v2.Compose:
+def build_transform(size: int, train: bool = False, mean=IMAGENET_MEAN,
+                    std=IMAGENET_STD, randaugment=None) -> v2.Compose:
     """The image pipeline: a PIL image in, a normalised `(3, size, size)` tensor out.
 
     Augmentation goes here. Only a random horizontal flip is applied, and only when
@@ -402,17 +467,24 @@ def build_transform(size: int, train: bool = False) -> v2.Compose:
     Args:
         size: side length in pixels of the square output.
         train: include the training augmentation. Leave false for val and test.
+        mean, std: normalisation constants. Use the backbone's own (`model.mean`,
+            `model.std`); CLIP, for one, was not trained with ImageNet's.
+        randaugment: `(num_ops, magnitude)` with magnitude out of 10, as the TF RandAugment
+            the iWildCam 2021 winners use (6, 2); applied after the flip, train only.
 
     Returns:
         A `v2.Compose` transform.
     """
     aug = [v2.RandomHorizontalFlip(p=0.5)] if train else []
+    if train and randaugment:
+        num_ops, magnitude = randaugment
+        aug.append(v2.RandAugment(num_ops=num_ops, magnitude=magnitude, num_magnitude_bins=11))
     return v2.Compose([
         v2.Resize((size, size), interpolation=v2.InterpolationMode.BILINEAR),
         *aug,
         v2.ToImage(),                              # PIL -> uint8 tensor, (3, H, W)
         v2.ToDtype(torch.float32, scale=True),     # uint8 0..255 -> float 0..1
-        v2.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        v2.Normalize(mean=mean, std=std),
     ])
 
 

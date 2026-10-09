@@ -1,0 +1,38 @@
+# LP-FT (Kumar et al., ICLR 2022; github.com/AnanyaKumar/transfer_learning) on top of
+# screen_dinov2reg_vitb14.yaml: fit the head as a linear probe on frozen features first, then fine-tune
+# everything at one lr. A random head distorted the features of several backbones in
+# screening (fine-tuning scored below the frozen probe on test).
+split: official_ood
+seed: 0
+
+model: vit_base_patch14_reg4_dinov2.lvd142m
+pretrained: true
+model_kwargs:
+  img_size: 224              # timm resamples the 518px position embedding once at load
+
+lr: 0.00001                  # one lr for backbone and probe head, as LP-FT
+weight_decay: 0.05
+wd_skip_1d: true
+lp_init: true               # LP stage before fine-tuning
+lr_schedule: cosine
+warmup_steps: 500
+grad_clip: 1.0
+
+min_per_camera: 10
+min_cameras: 5
+
+size: 224
+height: 224
+image_dir: null
+epochs: 10                    # as fast.yaml, so the ResNet rows compare directly
+batch_size: 128
+
+amp: true
+num_workers: 8
+device: null
+verbose: true
+pred_dir: results/preds
+log_dir: logs
+
+wandb: false
+wandb_project: ai4good-iwildcam

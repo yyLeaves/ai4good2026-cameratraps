@@ -1,0 +1,38 @@
+# Backbone screening at 224: plain fine-tuning (random head, 10x head lr) of DINOv2 ViT-g/14 reg4,
+# the counterpart of lpft_dinov2g_vitg14.yaml; same recipe as screen_dinov2_vitl14.yaml.
+
+split: official_ood
+seed: 0
+
+model: vit_giant_patch14_reg4_dinov2.lvd142m
+pretrained: true
+model_kwargs:
+  img_size: 224              # timm resamples the 518px position embedding once at load
+
+lr: 0.00001                  # backbone 1e-5
+head_lr_mult: 10             # fresh head at 1e-4
+weight_decay: 0.05
+wd_skip_1d: true
+lr_schedule: cosine
+warmup_steps: 500
+grad_clip: 1.0
+grad_checkpointing: true    # no effect on results
+
+min_per_camera: 10
+min_cameras: 5
+
+size: 224
+height: 224
+image_dir: null
+epochs: 10                    # as fast.yaml, so the ResNet rows compare directly
+batch_size: 128
+
+amp: true
+num_workers: 8
+device: null
+verbose: true
+pred_dir: results/preds
+log_dir: logs
+
+wandb: false
+wandb_project: ai4good-iwildcam
